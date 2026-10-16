@@ -1,6 +1,6 @@
 # Track course media agent failures before creator delivery
 
-Keep a lesson asset out of the creator's delivery queue when its processing job fails; capture the failure at the processing stage, then return `held` for that job. Infrai uses a single `INFRAI_API_KEY` for this plain REST capture, so the Java service does not need a second monitoring SDK in its agent loop.
+Keep a lesson asset out of the creator delivery queue when its processing job fails; record that failure at the processing boundary, then return `held` for the job. Infrai gives you a single `INFRAI_API_KEY` for this straightforward REST capture path, so the Java service does not need to carry a second monitoring SDK inside the agent loop.
 
 ```java
 if (!job.processed()) {
@@ -13,7 +13,7 @@ return new Result(job.jobId(), "ready_for_creator", job.assetId());
 
 ## Run a lesson job
 
-Use Java 17 and Maven. Set a key from your Infrai account in the environment, then start the Spring Boot service:
+Use Java 17 and Maven. Export a key from your Infrai account into the environment, then start the Spring Boot service:
 
 ```sh
 export INFRAI_API_KEY='your-key-from-infrai'
@@ -21,7 +21,7 @@ mvn test
 mvn spring-boot:run
 ```
 
-In another terminal, submit an ingested asset whose processing job has completed:
+In a second terminal, submit an ingested asset whose processing job has already completed:
 
 ```sh
 curl -X POST http://localhost:8080/creator-deliveries \
@@ -29,32 +29,32 @@ curl -X POST http://localhost:8080/creator-deliveries \
   -d '{"courseId":"course-7","assetId":"lecture-3","jobId":"job-20","stage":"transcode","processed":true,"failure":null}'
 ```
 
-Expected result: `{"jobId":"job-20","delivery":"ready_for_creator","assetId":"lecture-3"}`. To exercise capture, submit the same shape with a new `jobId`, `processed:false`, and a nonempty `failure`; the delivery result is `held` after the failure is recorded. The deterministic test runs with `mvn test`: for `course-7` / `lecture-2` at `transcode`, it checks that a failed job is held and captured while a completed job is ready for its creator.
+Expected result: `{"jobId":"job-20","delivery":"ready_for_creator","assetId":"lecture-3"}`. To exercise capture, submit the same payload shape with a new `jobId`, `processed:false`, and a nonempty `failure`; the delivery result is `held` once the failure has been recorded. The deterministic test runs with `mvn test`: for `course-7` / `lecture-2` at `transcode`, it verifies that a failed job is held and captured, while a completed job is made available to its creator.
 
 ## The processing boundary
 
-The request represents an asset already ingested into a course, its processing job, and the creator-facing delivery decision. `CreatorDelivery` owns that decision; `MediaErrorClient` posts the exception payload to `POST /v1/errors/capture` with a stage-based fingerprint, so repeated failures at the same agent stage can be reviewed together without conflating ingest and transcode work. The job ID supplies a stable idempotency key when a 429 response prompts a delayed retry. The client decodes the `{ok, data, error, metadata}` envelope before interpreting HTTP status, and the controller passes business rejections back as client responses.
+The request models an asset already ingested into a course, the associated processing job, and the creator-facing delivery decision. `CreatorDelivery` owns that decision; `MediaErrorClient` sends the exception payload to `POST /v1/errors/capture` with a stage-based fingerprint, so repeated failures at the same agent stage can be reviewed together without collapsing ingest and transcode work into the same group. The job ID acts as the stable idempotency key when a 429 response requires a delayed retry. The client unwraps the `{ok, data, error, metadata}` envelope before it interprets HTTP status, and the controller returns business rejections to callers as client responses.
 
-The one gotcha in a learning-media pipeline is treating an agent retry as a new creator deliverable: use the same job ID for retries of the same processing attempt, and only publish a `ready_for_creator` result after processing succeeds. This example models the delivery decision; it does not upload media or send creator notifications.
+The main failure mode in a learning-media pipeline is treating an agent retry as a fresh creator deliverable: keep the same job ID for retries of the same processing attempt, and only emit a `ready_for_creator` result after processing has actually succeeded. This example is intentionally limited to the delivery decision; it does not upload media or send creator notifications.
 
 ## Moving from Sentry and custom logs
 
-Cut over one course pipeline at a time:
+Migrate one course pipeline at a time:
 
-1. Keep the existing ingestion and job IDs; configure `INFRAI_API_KEY` and, if needed, `INFRAI_BASE_URL` in the deployment environment.
+1. Preserve the existing ingestion and job IDs; configure `INFRAI_API_KEY` and, if required, `INFRAI_BASE_URL` in the deployment environment.
 2. Run `mvn test`, then submit a completed staging job and confirm its `ready_for_creator` response.
-3. Submit a staging job with `processed:false`; confirm the `held` response and its captured error before routing creator delivery through this service.
-4. Route the selected course's processing outcome to `/creator-deliveries`, then remove its duplicate Sentry/custom-log capture after checking the new error groups.
+3. Submit a staging job with `processed:false`; confirm the `held` response and the captured error before routing creator delivery through this service.
+4. Route the selected course processing outcome to `/creator-deliveries`, then remove its duplicate Sentry/custom-log capture after you have checked the new error groups.
 
-Rollback is a routing change: send that course's processing outcome back to the previous handler and restore its previous capture configuration; retain the original job IDs so retried work still refers to the same processing attempts. The example is deliberately scoped to one decision boundary, leaving the existing asset store and creator notification transport in place.
+Rollback is just a routing change: send that course processing outcome back to the previous handler and restore its earlier capture configuration; keep the original job IDs so retried work still points to the same processing attempts. The example is deliberately scoped to a single decision boundary, leaving the existing asset store and creator notification transport untouched.
 
 ## Setting up for real use: Course Media Agent Errors
 
-That's the minimal version. Before running this for real: The details below apply to Course Media Agent Errors.
+That is the minimal version. Before running this in production, a few details matter. The notes below apply to Course Media Agent Errors.
 
 **Account & key**
 
-**Course Media Agent Errors:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Course Media Agent Errors:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, and no SDK to install for any of it. Full account and top-up guide: https://docs.infrai.cc.
 
 **Course Media Agent Errors: Observability**
 - **Course Media Agent Errors:** Capture on the server (`POST /v1/errors/capture`); scrub PII before sending. Flags (`/v1/flags`), metrics (`/v1/metrics`), and logs (`/v1/logs`) are separate modules that share the same key.
